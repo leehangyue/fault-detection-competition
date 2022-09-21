@@ -126,7 +126,8 @@ if __name__ == '__main__':
     EarlyStop = keras.callbacks.EarlyStopping(monitor = 'val_loss', patience = 10)
     
     # log路径打开cmd，运行tensorboard --logdir = train，浏览器访问localhost:6006
-    LogDir = 'LSTMlog'
+    # LogDir = 'LSTMlog'
+    LogDir = join(split(__file__)[0], 'LSTMlog')
     TensorboardCallback = tf.keras.callbacks.TensorBoard(log_dir = LogDir, histogram_freq = 10)
     
     history = LSTMModel.fit(X_train, y_train, epochs = epochs, batch_size = BatchSize, validation_split = 0.2, verbose = 1,
@@ -140,7 +141,8 @@ if __name__ == '__main__':
     print('yTrainPred minmax = ', np.min(yTrainPred), ', ', np.max(yTrainPred))
     print('yTestPred minmax = ', np.min(yTestPred), ', ', np.max(yTestPred))
     
-    LSTMModel.save('./model', 'LSTMModel')
+    LSTMModel.save(join(split(__file__)[0], 'LSTMModel'), 'LSTMModel')
+    # LSTMModel.save('./LSTMModel', 'LSTMModel')
     
     testA_path = join(split(split(__file__)[0])[0], 'static', 'test_A')
     # testA_path = './test_A'
@@ -150,8 +152,8 @@ if __name__ == '__main__':
     yTestAPred = LSTMModel.predict(X_testA)
     for i in range(len(testA_pkl_files)):
         testA_pkl_files[i] = testA_pkl_files[i].split('\\')[-1]
-    predict_score = pd.DataFrame(testA_pkl_files)
+    predict_score = pd.DataFrame([split(fname)[1] for fname in testA_pkl_files])
     predict_score = pd.concat([predict_score, pd.DataFrame(yTestAPred)], axis = 1)
     predict_score.columns = ['file_name', 'score']
     # predict_score.to_csv('submission.csv')
-    predict_score.to_csv(join(split(__file__)[0], 'submission.csv'))
+    predict_score.to_csv(join(split(__file__)[0], 'submission.csv'), index=False)
