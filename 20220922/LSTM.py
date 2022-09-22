@@ -26,11 +26,15 @@ def load_data(pkl_list,label=True):
     X = []
     y = []
     
-    for  each_pkl in pkl_list:
+    for each_pkl in tqdm(pkl_list):
         item = torch.load(each_pkl)
         # LSTM读取所有数据，但不考虑时间戳间隔不一致的问题
-        # 形成的X array形状变为 n×256×7
-        X.append(item[0][:,0:7])
+        # 形成的X array形状变为 n×(256×7+1)
+        item_x = np.array(item[0][:,0:7]).flatten()
+        item_x = np.append(item_x, item[1]['mileage'])
+        # 256 * 7 + 1 = 163 * 11, 2D输入训练似乎更快
+        item_x = item_x.reshape((163, 11))
+        X.append(item_x)
         if label:
             y.append(int(item[1]['label'][0]))
     X = np.array(X)
@@ -62,7 +66,8 @@ def BuildLSTM(TimeStep, InputColNum, OutStep, MiddleNeurons, optimizer, HiddenAc
     """
     
     #输入层
-    InputLayer = keras.layers.Input(shape = (TimeStep, InputColNum))
+    # InputLayer = keras.layers.Input(shape = (TimeStep, InputColNum))
+    InputLayer = keras.layers.Input(shape = (163, 11))
     
     #中间层，一层LSTM加若干全连接层
     Middle = []
@@ -72,7 +77,7 @@ def BuildLSTM(TimeStep, InputColNum, OutStep, MiddleNeurons, optimizer, HiddenAc
     
     #全连接输出层
     #???输出层使用softmax层会与交叉熵loss函数重复，所以只使用一般的全连接层？
-    OutputLayer = keras.layers.Dense(OutStep, activation = 'relu')(Middle[-1])
+    OutputLayer = keras.layers.Dense(OutStep, activation = 'sigmoid')(Middle[-1])
     
     Model = keras.models.Model(inputs = InputLayer, outputs = OutputLayer)
     #from_logits = False对应经过softmax函数的输出
@@ -100,20 +105,38 @@ if __name__ == '__main__':
     # data_path = './train'
     pkl_files = glob(data_path+'/*.pkl')
     
-    #[20220921]不根据标签将数据分开，全部作为训练集
-    random.seed(4)
+    random.seed(1)
     #排序并打乱存放车辆序号的集合
-    random.shuffle(pkl_files)  
+    random.shuffle(pkl_files)
+    
+    pos_pkl_files = []
+    neg_pkl_files = []
+    for f in pkl_files:
+        pkl_data = torch.load(f)
+        if int(pkl_data[1]['label'][0]) == 1:
+            pos_pkl_files.append(f)
+        else:
+            neg_pkl_files.append(f)
+    n_pos = len(pos_pkl_files)
+    n_neg = len(neg_pkl_files)
     
     train_pkl_files=[]
-    for i in range(len(pkl_files)//2):
-        train_pkl_files.append(pkl_files[i])
-        
     test_pkl_files=[]
-    for j in range(len(pkl_files)//2,len(pkl_files)):
-        test_pkl_files.append(pkl_files[j])
+    for i in range(n_pos):
+        if i < n_pos//2:
+            train_pkl_files.append(pos_pkl_files[i])
+        else:
+            test_pkl_files.append(pos_pkl_files[i])
+    for i in range(n_neg):
+        if i < n_pos//2:
+            train_pkl_files.append(neg_pkl_files[i])
+        else:
+            test_pkl_files.append(neg_pkl_files[i])
     
-        
+    random.seed(4)
+    #排序并打乱存放车辆序号的集合
+    random.shuffle(train_pkl_files)
+
     X_train,y_train=load_data(train_pkl_files)
     X_test,y_test=load_data(test_pkl_files)
     
@@ -125,10 +148,10 @@ if __name__ == '__main__':
     
     MiddleNeurons = [40, 20, 20]
     HiddenActi = 'tanh'
-    epochs = 35
-    BatchSize = 8192
-    optimizer = keras.optimizers.RMSprop(lr=1e-3, rho=0.9, epsilon=1e-08, decay=0.0)
-    # optimizer = keras.optimizers.Adam(learning_rate = 5e-4)
+    epochs = 50
+    BatchSize = 64
+    # optimizer = keras.optimizers.RMSprop(lr=1e-3, rho=0.8, epsilon=1e-08, decay=0.0)
+    optimizer = keras.optimizers.Adam(learning_rate = 5e-4)
     
     LSTMModel = BuildLSTM(256, 7, 1, MiddleNeurons, HiddenActi = HiddenActi, optimizer=optimizer)
     EarlyStop = keras.callbacks.EarlyStopping(monitor = 'val_loss', patience = 10)
@@ -137,17 +160,32 @@ if __name__ == '__main__':
     # LogDir = 'LSTMlog'
     LogDir = join(split(__file__)[0], 'LSTMlog')
     TensorboardCallback = tf.keras.callbacks.TensorBoard(log_dir = LogDir, histogram_freq = 10)
+    def adapt_learning_rate(epoch):
+        return 1e-3 * 5 / (5 + max(0, epoch - 20))
+    my_lr_scheduler = keras.callbacks.LearningRateScheduler(adapt_learning_rate)
     
     history = LSTMModel.fit(X_train, y_train, epochs = epochs, batch_size = BatchSize, validation_split = 0.2, verbose = 1,
-                            callbacks = [TensorboardCallback, EarlyStop])
+                            callbacks = [TensorboardCallback, EarlyStop, my_lr_scheduler])
+
+    # # 跳过训练，直接载入模型
+    # LSTMModel = keras.models.load_model(join(split(__file__)[0], 'LSTMModel'))
     
-    yTrainPred = LSTMModel.predict(X_train)
+    # yTrainPred = LSTMModel.predict(X_train)
     yTestPred = LSTMModel.predict(X_test)
     
     AUC1 = evaluate(y_test, yTestPred)
     print('AUC1  =', AUC1)
-    print('yTrainPred minmax = ', np.min(yTrainPred), ', ', np.max(yTrainPred))
+    # print('yTrainPred minmax = ', np.min(yTrainPred), ', ', np.max(yTrainPred))
     print('yTestPred minmax = ', np.min(yTestPred), ', ', np.max(yTestPred))
+    pos_score = yTestPred[np.argwhere(y_test >= 0.5).T[0], 0]
+    neg_score = yTestPred[np.argwhere(y_test < 0.5).T[0], 0]
+    import matplotlib.pyplot as plt
+    fig, axs = plt.subplots(2)
+    axs[0].hist(neg_score, bins=50, log=False, color='b', label='Score dist with label 0')
+    axs[1].hist(pos_score, bins=50, log=False, color='r', label='Score dist with label 1')
+    axs[0].legend()
+    axs[1].legend()
+    plt.show()
     
     LSTMModel.save(join(split(__file__)[0], 'LSTMModel'), 'LSTMModel')
     # LSTMModel.save('./LSTMModel', 'LSTMModel')
